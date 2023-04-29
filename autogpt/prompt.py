@@ -43,7 +43,10 @@ def get_prompt() -> str:
         "Use subprocesses for commands that will not terminate within a few minutes"
     )
     prompt_generator.add_constraint(
-        "Always come up with more than ten commands to execute."
+        "Always come up with more than ten independent unique commands to execute."
+    )
+    prompt_generator.add_constraint(
+        "All commands should be independent."
     )
 
     # Define the command list
