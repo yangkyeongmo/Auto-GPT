@@ -1,3 +1,5 @@
+import asyncio
+
 from colorama import Fore, Style
 
 from autogpt.app import execute_command, get_command
@@ -105,6 +107,7 @@ class Agent:
                     continue
                 assistant_reply_json = plugin.post_planning(self, assistant_reply_json)
 
+            commands = list()
             # Print Assistant thoughts
             if assistant_reply_json != {}:
                 validate_json(assistant_reply_json, LLM_DEFAULT_RESPONSE_FORMAT)
@@ -113,114 +116,123 @@ class Agent:
                     print_assistant_thoughts(
                         self.ai_name, assistant_reply_json, cfg.speak_mode
                     )
-                    command_name, arguments = get_command(assistant_reply_json)
-                    if cfg.speak_mode:
-                        say_text(f"I want to execute {command_name}")
-
-                    send_chat_message_to_user("Thinking... \n")
-                    arguments = self._resolve_pathlike_command_args(arguments)
-
+                    commands = get_command(assistant_reply_json)
                 except Exception as e:
                     logger.error("Error: \n", str(e))
 
-            if not cfg.continuous_mode and self.next_action_count == 0:
-                # ### GET USER AUTHORIZATION TO EXECUTE COMMAND ###
-                # Get key press: Prompt the user to press enter to continue or escape
-                # to exit
-                self.user_input = ""
-                send_chat_message_to_user(
-                    "NEXT ACTION: \n " + f"COMMAND = {command_name} \n "
-                    f"ARGUMENTS = {arguments}"
+            async def func():
+                await asyncio.gather(
+                    *[
+                        self.execute_command_in_loop(arguments, assistant_reply, cfg, command_name, user_input)
+                        for command_name, arguments in commands
+                    ]
                 )
-                logger.typewriter_log(
-                    "NEXT ACTION: ",
-                    Fore.CYAN,
-                    f"COMMAND = {Fore.CYAN}{command_name}{Style.RESET_ALL}  "
-                    f"ARGUMENTS = {Fore.CYAN}{arguments}{Style.RESET_ALL}",
-                )
-                print(
-                    "Enter 'y' to authorise command, 'y -N' to run N continuous commands, 's' to run self-feedback commands"
-                    "'n' to exit program, or enter feedback for "
-                    f"{self.ai_name}...",
-                    flush=True,
-                )
-                while True:
-                    console_input = ""
-                    if cfg.chat_messages_enabled:
-                        console_input = clean_input("Waiting for your response...")
-                    else:
-                        console_input = clean_input(
-                            Fore.MAGENTA + "Input:" + Style.RESET_ALL
-                        )
-                    if console_input.lower().strip() == cfg.authorise_key:
-                        user_input = "GENERATE NEXT COMMAND JSON"
-                        break
-                    elif console_input.lower().strip() == "s":
-                        logger.typewriter_log(
-                            "-=-=-=-=-=-=-= THOUGHTS, REASONING, PLAN AND CRITICISM WILL NOW BE VERIFIED BY AGENT -=-=-=-=-=-=-=",
-                            Fore.GREEN,
-                            "",
-                        )
-                        thoughts = assistant_reply_json.get("thoughts", {})
-                        self_feedback_resp = self.get_self_feedback(
-                            thoughts, cfg.fast_llm_model
-                        )
-                        logger.typewriter_log(
-                            f"SELF FEEDBACK: {self_feedback_resp}",
-                            Fore.YELLOW,
-                            "",
-                        )
-                        if self_feedback_resp[0].lower().strip() == cfg.authorise_key:
-                            user_input = "GENERATE NEXT COMMAND JSON"
-                        else:
-                            user_input = self_feedback_resp
-                        break
-                    elif console_input.lower().strip() == "":
-                        print("Invalid input format.")
-                        continue
-                    elif console_input.lower().startswith(f"{cfg.authorise_key} -"):
-                        try:
-                            self.next_action_count = abs(
-                                int(console_input.split(" ")[1])
-                            )
-                            user_input = "GENERATE NEXT COMMAND JSON"
-                        except ValueError:
-                            print(
-                                f"Invalid input format. Please enter '{cfg.authorise_key} -N' where N is"
-                                " the number of continuous tasks."
-                            )
-                            continue
-                        break
-                    elif console_input.lower() == cfg.exit_key:
-                        user_input = "EXIT"
-                        break
-                    else:
-                        user_input = console_input
-                        command_name = "human_feedback"
-                        break
 
-                if user_input == "GENERATE NEXT COMMAND JSON":
+            asyncio.run(func())
+
+    async def execute_command_in_loop(self, arguments, assistant_reply, cfg, command_name, user_input):
+        if cfg.speak_mode:
+            say_text(f"I want to execute {command_name}")
+
+        send_chat_message_to_user("Thinking... \n")
+        arguments = self._resolve_pathlike_command_args(arguments)
+
+        if not cfg.continuous_mode and self.next_action_count == 0:
+            # ### GET USER AUTHORIZATION TO EXECUTE COMMAND ###
+            # Get key press: Prompt the user to press enter to continue or escape
+            # to exit
+            self.user_input = ""
+            send_chat_message_to_user(
+                "NEXT ACTION: \n " + f"COMMAND = {command_name} \n "
+                                     f"ARGUMENTS = {arguments}"
+            )
+            logger.typewriter_log(
+                "NEXT ACTION: ",
+                Fore.CYAN,
+                f"COMMAND = {Fore.CYAN}{command_name}{Style.RESET_ALL}  "
+                f"ARGUMENTS = {Fore.CYAN}{arguments}{Style.RESET_ALL}",
+            )
+            print(
+                "Enter 'y' to authorise command, 'y -N' to run N continuous commands, 's' to run self-feedback commands"
+                "'n' to exit program, or enter feedback for "
+                f"{self.ai_name}...",
+                flush=True,
+            )
+            while True:
+                console_input = ""
+                if cfg.chat_messages_enabled:
+                    console_input = clean_input("Waiting for your response...")
+                else:
+                    console_input = clean_input(
+                        Fore.MAGENTA + "Input:" + Style.RESET_ALL
+                    )
+                if console_input.lower().strip() == cfg.authorise_key:
+                    user_input = "GENERATE NEXT COMMAND JSON"
+                    break
+                elif console_input.lower().strip() == "s":
                     logger.typewriter_log(
-                        "-=-=-=-=-=-=-= COMMAND AUTHORISED BY USER -=-=-=-=-=-=-=",
-                        Fore.MAGENTA,
+                        "-=-=-=-=-=-=-= THOUGHTS, REASONING, PLAN AND CRITICISM WILL NOW BE VERIFIED BY AGENT -=-=-=-=-=-=-=",
+                        Fore.GREEN,
                         "",
                     )
-                elif user_input == "EXIT":
-                    send_chat_message_to_user("Exiting...")
-                    print("Exiting...", flush=True)
+                    thoughts = assistant_reply_json.get("thoughts", {})
+                    self_feedback_resp = self.get_self_feedback(
+                        thoughts, cfg.fast_llm_model
+                    )
+                    logger.typewriter_log(
+                        f"SELF FEEDBACK: {self_feedback_resp}",
+                        Fore.YELLOW,
+                        "",
+                    )
+                    if self_feedback_resp[0].lower().strip() == cfg.authorise_key:
+                        user_input = "GENERATE NEXT COMMAND JSON"
+                    else:
+                        user_input = self_feedback_resp
                     break
+                elif console_input.lower().strip() == "":
+                    print("Invalid input format.")
+                    continue
+                elif console_input.lower().startswith(f"{cfg.authorise_key} -"):
+                    try:
+                        self.next_action_count = abs(
+                            int(console_input.split(" ")[1])
+                        )
+                        user_input = "GENERATE NEXT COMMAND JSON"
+                    except ValueError:
+                        print(
+                            f"Invalid input format. Please enter '{cfg.authorise_key} -N' where N is"
+                            " the number of continuous tasks."
+                        )
+                        continue
+                    break
+                elif console_input.lower() == cfg.exit_key:
+                    user_input = "EXIT"
+                    break
+                else:
+                    user_input = console_input
+                    command_name = "human_feedback"
+                    break
+
+            if user_input == "GENERATE NEXT COMMAND JSON":
+                logger.typewriter_log(
+                    "-=-=-=-=-=-=-= COMMAND AUTHORISED BY USER -=-=-=-=-=-=-=",
+                    Fore.MAGENTA,
+                    "",
+                )
+            elif user_input == "EXIT":
+                send_chat_message_to_user("Exiting...")
+                print("Exiting...", flush=True)
+                break
             else:
                 # Print command
                 send_chat_message_to_user(
                     "NEXT ACTION: \n " + f"COMMAND = {command_name} \n "
                     f"ARGUMENTS = {arguments}"
                 )
-
                 logger.typewriter_log(
-                    "NEXT ACTION: ",
-                    Fore.CYAN,
-                    f"COMMAND = {Fore.CYAN}{command_name}{Style.RESET_ALL}"
-                    f"  ARGUMENTS = {Fore.CYAN}{arguments}{Style.RESET_ALL}",
+                    "-=-=-=-=-=-=-= COMMAND AUTHORISED BY USER -=-=-=-=-=-=-=",
+                    Fore.MAGENTA,
+                    "",
                 )
 
             # Execute command
